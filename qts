@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# qts - Proxmox QEMU Guest Agent test
+# Usage: qts <VMID>
+
+set -u
+VMID="${1:-}"
+
+die(){ echo "✗ $1"; exit 1; }
+ok(){ echo "✓ $1"; }
+warn(){ echo "⚠ $1"; }
+line(){ printf '%*s\n' 60 '' | tr ' ' '-'; }
+sec(){ echo; line; echo "$1"; line; }
+
+[[ -n "$VMID" ]] || die "Usage: $0 <VMID>"
+[[ "$VMID" =~ ^[0-9]+$ ]] || die "VMID must be a number."
+command -v qm >/dev/null 2>&1 || die "'qm' not found. Run on Proxmox host."
+qm status "$VMID" >/dev/null 2>&1 || die "VM $VMID not found."
+
+HAS_JQ=0; command -v jq >/dev/null 2>&1 && HAS_JQ=1
+
+agent(){ qm agent "$VMID" "$@" 2>&1; }
+
+pretty(){
+  if [[ "$HAS_JQ" -eq 1 ]] && echo "$1" | jq empty >/dev/null 2>&1; then
+    echo "$1" | jq .
+  else
+    echo "$1"
+  fi
+}
+
+epoch_seconds(){
+  local n="$1"
+  [[ "$n" =~ ^[0-9]+$ ]] || { echo ""; return; }
+  if   (( n > 100000000000000000 )); then echo $((n/1000000000))
+  elif (( n > 100000000000000 ));    then echo $((n/1000000))
+  elif (( n > 100000000000 ));       then echo $((n/1000))
+  else echo "$n"; fi
+}
+
+human_local(){
+  local s; s="$(epoch_seconds "$1")"
+  [[ -n "$s" ]] && date -d "@$s" "+%Y-%m-%d %H:%M:%S %Z" || echo "unknown"
+}
+
+human_utc(){
+  local s; s="$(epoch_seconds "$1")"
+  [[ -n "$s" ]] && date -u -d "@$s" "+%Y-%m-%d %H:%M:%S UTC" || echo "unknown"
+}
+
+json_num(){
+  local d="$1"
+  [[ "$d" =~ ^[0-9]+$ ]] && { echo "$d"; return; }
+  if [[ "$HAS_JQ" -eq 1 ]] && echo "$d" | jq empty >/dev/null 2>&1; then
+    echo "$d" | jq -r 'if type=="number" then . elif has("return") then .return elif has("result") then .result else empty end'
+  else
+    echo "$d" | grep -oE '[0-9]{10,}' | head -n1
+  fi
+}
+
+simple(){
+  local title="$1"; shift; local out
+  sec "$title"
+  echo "Command: qm agent $VMID $*"; echo
+  if out="$(agent "$@")"; then ok "PASS"; [[ -n "$out" ]] && pretty "$out"; else echo "✗ FAIL"; echo "$out"; fi
+}
+
+guest_time(){
+  local out raw
+  sec "Guest time"
+  echo "Command: qm agent $VMID get-time"; echo
+  if out="$(agent get-time)"; then
+    ok "PASS"; raw="$(json_num "$out")"
+    echo "Raw:   $raw"
+    echo "Local: $(human_local "$raw")"
+    echo "UTC:   $(human_utc "$raw")"
+  else echo "✗ FAIL"; echo "$out"; fi
+}
+
+network(){
+  local out
+  sec "Network / IP addresses"
+  echo "Command: qm agent $VMID network-get-interfaces"; echo
+  if out="$(agent network-get-interfaces)"; then
+    ok "PASS"
+    if [[ "$HAS_JQ" -eq 1 ]] && echo "$out" | jq empty >/dev/null 2>&1; then
+      echo; echo "Detected addresses:"
+      echo "$out" | jq -r '
+        [ .[] | select(."ip-addresses" != null) | .name as $i
+          | ."ip-addresses"[]
+          | select(."ip-address"!="127.0.0.1" and ."ip-address"!="::1")
+          | "  \($i): \(.\["ip-address-type"\]) \(.\["ip-address"\])/\(.prefix)" ]
+        | if length==0 then "  No non-loopback IP addresses found." else .[] end'
+      echo; echo "Full details:"; echo "$out" | jq .
+    else pretty "$out"; fi
+  else echo "✗ FAIL"; echo "$out"; fi
+}
+
+fsinfo(){
+  local out
+  sec "Filesystems"
+  echo "Command: qm agent $VMID get-fsinfo"; echo
+  if out="$(agent get-fsinfo)"; then
+    ok "PASS"
+    if [[ "$HAS_JQ" -eq 1 ]] && echo "$out" | jq empty >/dev/null 2>&1; then
+      echo; echo "Mounted filesystems:"
+      echo "$out" | jq -r '[ .[] | "  \(.mountpoint)  \(.type // "unknown")  \(.name // "unknown")" ] | if length==0 then "  No filesystem info returned." else .[] end'
+      echo; echo "Full details:"; echo "$out" | jq .
+    else pretty "$out"; fi
+  else echo "✗ FAIL"; echo "$out"; fi
+}
+
+users(){
+  local out
+  sec "Logged-in users"
+  echo "Command: qm agent $VMID get-users"; echo
+  if out="$(agent get-users)"; then
+    ok "PASS"
+    if [[ "$HAS_JQ" -eq 1 ]] && echo "$out" | jq empty >/dev/null 2>&1; then
+      echo; echo "Current users:"
+      echo "$out" | jq -r '
+        def ht:
+          if .==null then "unknown"
+          elif .>100000000000000000 then (. / 1000000000 | floor | strftime("%Y-%m-%d %H:%M:%S UTC"))
+          elif .>100000000000000 then (. / 1000000 | floor | strftime("%Y-%m-%d %H:%M:%S UTC"))
+          elif .>100000000000 then (. / 1000 | floor | strftime("%Y-%m-%d %H:%M:%S UTC"))
+          else (. | floor | strftime("%Y-%m-%d %H:%M:%S UTC")) end;
+        [ .[] | "  User: \(.user // "unknown") | Login: \(.\["login-time"\] | ht)" ]
+        | if length==0 then "  No logged-in users returned." else .[] end'
+      echo; echo "Full details:"
+      echo "$out" | jq '
+        def ht:
+          if .==null then "unknown"
+          elif .>100000000000000000 then (. / 1000000000 | floor | strftime("%Y-%m-%d %H:%M:%S UTC"))
+          elif .>100000000000000 then (. / 1000000 | floor | strftime("%Y-%m-%d %H:%M:%S UTC"))
+          elif .>100000000000 then (. / 1000 | floor | strftime("%Y-%m-%d %H:%M:%S UTC"))
+          else (. | floor | strftime("%Y-%m-%d %H:%M:%S UTC")) end;
+        map(. + {"login-time-readable": (.\["login-time"\] | ht)})'
+    else pretty "$out"; warn "Install jq for readable login-time: apt update && apt install -y jq"; fi
+  else echo "✗ FAIL"; echo "$out"; fi
+}
+
+clear
+echo "============================================================"
+echo " QEMU Guest Agent Test - VMID $VMID"
+echo "============================================================"
+
+sec "VM status"; qm status "$VMID"
+
+sec "Proxmox guest-agent config"
+AGENT_CONFIG="$(qm config "$VMID" | grep '^agent:' || true)"
+[[ -n "$AGENT_CONFIG" ]] && echo "$AGENT_CONFIG" || warn "agent: not configured"
+
+if [[ "$AGENT_CONFIG" != *"1"* && "$AGENT_CONFIG" != *"enabled=1"* ]]; then
+  warn "Guest agent may not be enabled."
+  echo "Fix: qm set $VMID --agent enabled=1 && qm shutdown $VMID && qm start $VMID"
+fi
+
+[[ "$HAS_JQ" -eq 0 ]] && warn "jq missing. Install: apt update && apt install -y jq"
+
+simple "Ping" ping
+simple "Hostname" get-host-name
+simple "OS information" get-osinfo
+guest_time
+network
+fsinfo
+users
+
+sec "Summary"
+if qm agent "$VMID" ping >/dev/null 2>&1; then
+  ok "Guest agent is responding."
+else
+  echo "✗ Guest agent is NOT responding."
+  echo
+  echo "Fix:"
+  echo "  qm set $VMID --agent enabled=1"
+  echo "  qm shutdown $VMID"
+  echo "  qm start $VMID"
+  echo
+  echo "Inside Ubuntu:"
+  echo "  sudo apt update"
+  echo "  sudo apt install -y qemu-guest-agent"
+  echo "  sudo systemctl enable --now qemu-guest-agent"
+fi
+echo
