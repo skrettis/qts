@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# qts - Proxmox QEMU Guest Agent test
+# qts — Quick Test Script
+# Proxmox QEMU Guest Agent test
 # Usage: qts <VMID>
 
 set -u
@@ -88,7 +89,7 @@ network(){
         [ .[] | select(."ip-addresses" != null) | .name as $i
           | ."ip-addresses"[]
           | select(."ip-address"!="127.0.0.1" and ."ip-address"!="::1")
-          | "  \($i): \(.\["ip-address-type"\]) \(.\["ip-address"\])/\(.prefix)" ]
+          | "  \($i): \(.["ip-address-type"]) \(.["ip-address"])/\(.prefix)" ]
         | if length==0 then "  No non-loopback IP addresses found." else .[] end'
       echo; echo "Full details:"; echo "$out" | jq .
     else pretty "$out"; fi
@@ -124,7 +125,7 @@ users(){
           elif .>100000000000000 then (. / 1000000 | floor | strftime("%Y-%m-%d %H:%M:%S UTC"))
           elif .>100000000000 then (. / 1000 | floor | strftime("%Y-%m-%d %H:%M:%S UTC"))
           else (. | floor | strftime("%Y-%m-%d %H:%M:%S UTC")) end;
-        [ .[] | "  User: \(.user // "unknown") | Login: \(.\["login-time"\] | ht)" ]
+        [ .[] | "  User: \(.user // "unknown") | Login: \(.["login-time"] | ht)" ]
         | if length==0 then "  No logged-in users returned." else .[] end'
       echo; echo "Full details:"
       echo "$out" | jq '
@@ -134,14 +135,15 @@ users(){
           elif .>100000000000000 then (. / 1000000 | floor | strftime("%Y-%m-%d %H:%M:%S UTC"))
           elif .>100000000000 then (. / 1000 | floor | strftime("%Y-%m-%d %H:%M:%S UTC"))
           else (. | floor | strftime("%Y-%m-%d %H:%M:%S UTC")) end;
-        map(. + {"login-time-readable": (.\["login-time"\] | ht)})'
+        map(. + {"login-time-readable": (.["login-time"] | ht)})'
     else pretty "$out"; warn "Install jq for readable login-time: apt update && apt install -y jq"; fi
   else echo "✗ FAIL"; echo "$out"; fi
 }
 
 clear
 echo "============================================================"
-echo " QEMU Guest Agent Test - VMID $VMID"
+echo " qts — Quick Test Script"
+echo " Proxmox QEMU Guest Agent Test - VMID $VMID"
 echo "============================================================"
 
 sec "VM status"; qm status "$VMID"
