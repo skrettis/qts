@@ -1,6 +1,6 @@
-# qts
+# qts — Quick Test Script
 
-A small, clean Bash tool for testing the **QEMU Guest Agent** inside Proxmox VMs.
+**Quick Test Script** for checking the **QEMU Guest Agent** status in Proxmox VMs.
 
 `qts` helps verify whether the guest agent is enabled, reachable, and returning useful VM information such as hostname, OS details, IP addresses, filesystems, guest time, and logged-in users.
 
@@ -95,7 +95,8 @@ Or, if running from the repository folder:
 
 ```text
 ============================================================
- QEMU Guest Agent Test - VMID 100
+ qts — Quick Test Script
+ Proxmox QEMU Guest Agent Test - VMID 100
 ============================================================
 
 ------------------------------------------------------------
